@@ -9,6 +9,7 @@ library(tidymodels)
 library(tidyverse)
 library(lightgbm)
 library(bonsai)
+library(glmnet)
 
 # read in data 
 train_data <- vroom("/Users/eliseclark/Documents/Fall 2025/Stat 348/AllstateComp/train.csv")
@@ -89,9 +90,64 @@ vroom_write(x = submission, file = "/Users/eliseclark/Documents/Fall 2025/Stat 3
   
 ############### PENALIZED LINEAR REGRESSION ##################
 
+# recipe
+pen_recipe <- recipe(log_loss ~ . , data = train_data) %>%
+  step_other(all_nominal_predictors(), threshold = 0.01) %>%
+  step_lencode_mixed(all_nominal_predictors(), outcome = vars(log_loss)) %>%
+  step_normalize(all_numeric_predictors()) %>%
+  step_zv(all_predictors())
 
 
-###################### BOOSTED TREES ####################       *Best Model 
+# model 
+pen_model <- linear_reg(penalty = tune(), 
+                        mixture = tune()) %>% 
+  set_engine("glmnet")  
+
+# workflow  
+pen_workflow <- workflow() %>%
+  add_recipe(pen_recipe) %>%
+  add_model(pen_model)
+
+# grid of values to tune 
+grid_of_tuning_params <- grid_regular(penalty(),
+                                      mixture(),
+                                      levels = 5)
+
+# split data for cv & run it 
+folds <- vfold_cv(train_data, v = 5, repeats=1)
+
+CV_results <- pen_workflow %>%
+  tune_grid(resamples = folds,
+            grid = grid_of_tuning_params,
+            metrics = metric_set(mae), 
+            control = control_grid(verbose = TRUE)) 
+
+
+# find best tuning parameters
+bestTune <- CV_results %>%
+  select_best(metric = "mae")
+
+## finalize the workflow & fit 
+final_wf <- pen_workflow %>%
+  finalize_workflow(bestTune) %>%
+  fit(data = train_data) 
+
+## predictions
+pen_preds <- final_wf %>%
+  predict(new_data = testData) %>%
+  mutate(loss = expm1(.pred))
+
+
+
+pen_submission <- tibble(
+  id = testData$id,
+  loss = pen_preds$loss)
+
+vroom_write(x = pen_submission, file = "/Users/eliseclark/Documents/Fall 2025/Stat 348/allstate3.csv", delim=",")
+
+
+
+###################### BOOSTED TREES ####################    
 
 # model 
 boost_model <- boost_tree(tree_depth = tune(),
